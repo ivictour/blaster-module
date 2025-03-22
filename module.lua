@@ -53,7 +53,7 @@ function Blaster:GetBullet()
 	bullet.Color = Color3.new(0, 0.94902, 1)
 	bullet.Material = Enum.Material.Neon
 	bullet.Shape = Enum.PartType.Block
-	bullet.Anchored = false
+	bullet.Anchored = true
 	bullet.CanCollide = false
 	bullet.Name = "Bullet"
 	return bullet
@@ -166,9 +166,9 @@ function Blaster:Update(dt)
 		end
 		-- check if the time since the last shot exceeds the fire rate
 		-- if so, fire a projectile and set the state accordingly, while also updating the last fire time
-		if os.clock() - self.LastFireTime >= self.Config.FireRate then
+		if time() - self.LastFireTime >= self.Config.FireRate then
 			self:FireProjectile()
-			self.LastFireTime = os.clock()
+			self.LastFireTime = time()
 			self:SetState("firing")
 		end
 	else
@@ -284,7 +284,7 @@ function Blaster:FireProjectile()
 		Velocity = direction * self.Config.ProjectileSpeed,
 		Damage = self.Config.Damage,
 		Lifetime = self.Config.ProjectileLifetime,
-		StartTime = os.clock(),
+		StartTime = time(),
 		BounceCount = 0,
 		MaxBounces = self.Config.ProjectileBounce,
 	}
@@ -357,7 +357,7 @@ end
 function Blaster:UpdateProjectiles(dt)
 	for i = #self.Projectiles, 1, -1 do
 		local proj = self.Projectiles[i]
-		if os.clock() - proj.StartTime >= proj.Lifetime then
+		if time() - proj.StartTime >= proj.Lifetime then
 			self:DestroyProjectile(proj)
 		else
 			local oldPos = proj.Position
