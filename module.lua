@@ -1,28 +1,24 @@
 -- current blaster module script
 
 --[[
-	Author: Ivictor
-	Date updated: March 22, 2025.
+	Author: ivictour
+	Date updated: march 22, 2025
 	Description: 
-			This module's purpose is to give functionality to blasters in the game.
-			It handles (not in order): projectile creation and physics,
-									   Target selection,
-						               Costum settings for each blaster,
-						               Damage calculations,
-						               Hit visualization,
-						               Sound handling,
-						               Bullet pooling to reduce lag,
-						               Blaster state handling,
-						               Some debugging methods,
-						               Error handling
-						               
-						
-
+		This module's purpose is to give functionality to blasters in the game.
+		It handles (not in order): projectile creation and physics,
+								   target selection,
+								   custom settings for each blaster,
+								   damage calculations,
+								   hit visualization,
+								   sound handling,
+								   bullet pooling to reduce lag,
+								   blaster state handling,
+								   some debugging methods,
+								   error handling.
 ]]
 
--- the following sets the __index metamethod for blaster
--- this lets blaster objects access the methods in the blaster table, hence simulating a class
--- classes let us effectively manage multiple blasters, each with their own state and custom settings
+-- set the __index metamethod 
+-- this simulates a class in lua, allowing us to manage multiple blasters, each with their own state and custom settings
 local Blaster = {}
 Blaster.__index = Blaster
 
@@ -32,11 +28,15 @@ local Debris = game:GetService("Debris")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
--- define a gravity vector based on the workspace gravity; this is used in the physics calculations so that projectile motion is realistic
+-- define a gravity vector based on the workspace gravity, this is used in the physics calculations so that the projectile motion is realistic
 local GRAVITY = Vector3.new(0, -Workspace.Gravity, 0)
 
--- this is a table used to store and reuse bullet parts instead of creating new ones each time
-local bulletPool = {} 
+-- bulletPool is a table used to store and reuse bullet parts instead of creating new ones each time, reducing lag
+local bulletPool = {}
+
+-- =====================================
+-- bullet pooling and helper functions
+-- =====================================
 
 -- this method returns a bullet object from the pool or creates a new one if the pool is empty
 function Blaster:GetBullet()
@@ -45,19 +45,18 @@ function Blaster:GetBullet()
 		local bullet = table.remove(bulletPool)
 		bullet.Parent = Workspace
 		return bullet
-	else
-		-- create a new bullet if none are available
-		local bullet = Instance.new("Part")
-		bullet.Size = Vector3.new(0.3, 0.3, 0.3)
-		-- a unique color is chosen so that the shot is easily visible in game
-		bullet.Color = Color3.new(0, 0.94902, 1)
-		bullet.Material = Enum.Material.Neon
-		bullet.Shape = Enum.PartType.Block
-		bullet.Anchored = false
-		bullet.CanCollide = false
-		bullet.Name = "Bullet"
-		return bullet
 	end
+	-- create a new bullet if none are available
+	local bullet = Instance.new("Part")
+	bullet.Size = Vector3.new(0.3, 0.3, 0.3)
+	-- a unique color is chosen so that the shot is easily visible in game
+	bullet.Color = Color3.new(0, 0.94902, 1)
+	bullet.Material = Enum.Material.Neon
+	bullet.Shape = Enum.PartType.Block
+	bullet.Anchored = false
+	bullet.CanCollide = false
+	bullet.Name = "Bullet"
+	return bullet
 end
 
 -- this method returns a bullet back to the pool so it can be reused
@@ -74,13 +73,22 @@ function Blaster:CreateBullet()
 	return bullet
 end
 
+--=====================================
+-- constructor and initialization
+--=========================================
+
 -- this method acts as a constructor to create a new blaster instance
+-- the model must have a base and a barrel part
 function Blaster.new(blasterModel, config)
 	local self = setmetatable({}, Blaster)
 	self.Model = blasterModel
-	-- ensures the model has the necessary parts 
-	self.Base = blasterModel:WaitForChild("Base")
-	self.Barrel = blasterModel:WaitForChild("Barrel")
+	-- ensure the model has the necessary parts
+	self.Base = blasterModel:FindFirstChild("Base")
+	self.Barrel = blasterModel:FindFirstChild("Barrel")
+	
+	if not self.Base or not self.Barrel then
+		error("Blaster model missing essential parts (Base or Barrel)")
+	end
 	self.Config = config or {}
 	-- detection range defines how far the blaster can detect targets in studs
 	self.Config.DetectionRange = self.Config.DetectionRange or 50
@@ -99,19 +107,22 @@ function Blaster.new(blasterModel, config)
 	self.Projectiles = {} -- table to hold active projectiles fired by this blaster
 	self.LastFireTime = 0 -- timestamp used to control fire rate
 	self.Target = nil -- the current target the blaster is aiming at
-	self.State = "idle" -- possible states are idle tracking or firing
+	self.State = "idle" -- possible states are idle, tracking, or firing
 	self.Active = true -- flag indicating if the blaster is active
 	return self
 end
 
+--===================================================
+-- state management and loop control
+--======================================
 
--- this method simply updates the current state, this is useful for debugging and behavior
+-- this method updates the current state, useful for debugging and behavior
 function Blaster:SetState(state)
 	self.State = state
 end
 
 -- this method begins the blaster loop by connecting to the heartbeat event
--- The heartbeat loop is a technique to run logic every frame
+-- the heartbeat loop is a technique to run logic every frame
 function Blaster:Start()
 	self.Running = true
 	self.UpdateConn = RunService.Heartbeat:Connect(function(dt)
@@ -119,7 +130,7 @@ function Blaster:Start()
 	end)
 end
 
--- this method disconnects the heartbeat connection which stops the update loop
+-- this method disconnects the heartbeat connection, which stops the update loop
 function Blaster:Stop()
 	self.Running = false
 	if self.UpdateConn then
@@ -127,78 +138,99 @@ function Blaster:Stop()
 	end
 end
 
+--====================================
+-- main update loop and target selection
+--==========================================
 
 -- this method is called every frame and does the following:
--- - scan for targets using a loop
+-- - scan for targets nearby
 -- - aim using predictive targeting if possible
--- - fire projectiles if the fire rate timer allows it
--- -  update the positions of all active projectiles using basic physics
+-- - fire projectiles if the fire rate timer allows
+-- - update the positions of all active projectiles using basic physics
 function Blaster:Update(dt)
+	if not self.Model or not self.Model.Parent then
+		self:Shutdown()
+		return
+	end
 	self:ScanForTarget()
 	if self.Target then
 		self:SetState("tracking")
-		-- if target has a hrp (humanoid root part) then predictive targeting is used to account for possible target movement
+		-- if the target has a humanoid root part, use predictive targeting to account for possible target movement
 		if self.Target:FindFirstChild("HumanoidRootPart") then
 			local interceptPoint = self:CalculateInterceptPoint(self.Target)
 			local desiredCF = CFrame.new(self.Barrel.Position, interceptPoint)
-			-- Lerp is used to smoothly rotate the barrel toward the target
+			-- lerp is used to smoothly rotate the barrel toward the target
 			self.Barrel.CFrame = self.Barrel.CFrame:Lerp(desiredCF, dt * 5)
 		else
 			self:AimAtTarget(self.Target, dt)
 		end
 		-- check if the time since the last shot exceeds the fire rate
-		-- if so, fire a projectile and set the state accordingly, while also updating last fire time
-		if tick() - self.LastFireTime >= self.Config.FireRate then
+		-- if so, fire a projectile and set the state accordingly, while also updating the last fire time
+		if os.clock() - self.LastFireTime >= self.Config.FireRate then
 			self:FireProjectile()
-			self.LastFireTime = tick()
+			self.LastFireTime = os.clock()
 			self:SetState("firing")
 		end
 	else
-		-- since theres no target, we must be idle
+		-- since there's no target, we must be idle
 		self:SetState("idle")
 	end
 	-- update projectiles
 	self:UpdateProjectiles(dt)
 end
 
--- this method iterates over all models in the workspace to find the closest valid target
--- A  loop is used here because it effectively processes an array/list of objects
+-- this method scans for targets using GetPartBoundsInRadius
 function Blaster:ScanForTarget()
+	local overlapParams = OverlapParams.new()
+	-- exclude the owner's character if available to avoid self targeting
+	if self.Owner and self.Owner.Character then
+		overlapParams.FilterDescendantsInstances = {self.Owner.Character}
+	else
+		overlapParams.FilterDescendantsInstances = {}
+	end
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	-- get parts in a sphere around the base position
+	local parts = Workspace:GetPartBoundsInRadius(self.Base.Position, self.Config.DetectionRange, overlapParams)
+	local models = {}
+	-- use a for loop to store unique models that have a humanoid and humanoid root part
+	for _, part in ipairs(parts) do
+		local model = part.Parent
+		if model and model:IsA("Model") and model:FindFirstChildOfClass("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
+			models[model] = true
+		end
+	end
+	-- determine the closest model by iterating over the models table
 	local closest, minDistance = nil, self.Config.DetectionRange
-	for _, model in ipairs(Workspace:GetDescendants()) do
-		-- check if the model has a humanoid and hrp, which would make it a valid target
-		if model:IsA("Model") and model:FindFirstChildOfClass("Humanoid") and model:FindFirstChild("HumanoidRootPart") then
-			-- skip the owner so the blaster does not target it's spawner
-			if self.Owner and model == self.Owner.Character then
-				-- do nothing 
-			else
-				-- calculate distance between the blaster and the target
-				local d = (model.HumanoidRootPart.Position - self.Base.Position).Magnitude
-				-- if the distance is within range, set it as the target
-				-- if its not, then set the target to nil, since we cant see it anyway
-				if d < minDistance then
-					minDistance = d
-					closest = model
-				end
+	for model, _ in pairs(models) do
+		local hrp = model:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			local d = (hrp.Position - self.Base.Position).Magnitude
+			if d < minDistance then
+				minDistance = d
+				closest = model
 			end
 		end
 	end
 	self.Target = closest
 end
 
--- this mehod rotates the barrel directly at the target using a lerp for smooth movement
+-- this method rotates the barrel directly at the target using a lerp 
 function Blaster:AimAtTarget(target, dt)
 	if target and target:FindFirstChild("HumanoidRootPart") then
-		-- if target isnt nil and target has a hrp, then set the barrels rotation to look at the target
+		-- if the target isn't nil and has a humanoid root part, set the barrel's rotation to look at the target
 		local desiredCF = CFrame.new(self.Barrel.Position, target.HumanoidRootPart.Position)
 		self.Barrel.CFrame = self.Barrel.CFrame:Lerp(desiredCF, dt * 5)
 	end
 end
 
+--=======================================================================
+-- predictive targeting and physics helper functions
+--=====================================================
 
--- this method calculates where the projectile should be aimed based on the targets velocity
--- This method uses basic kinematics, timeToReach is estimated by dividing the distance by projectile speed,
--- then the targets velocity is multiplied by this time to predict the intercept position
+-- this method calculates where the projectile should be aimed based on the target's velocity
+-- it uses basic kinematics, timeToReach is estimated by dividing the distance by projectile speed,
+-- then the target's velocity is multiplied by this time to predict the intercept position
 function Blaster:CalculateInterceptPoint(target)
 	local hrp = target:FindFirstChild("HumanoidRootPart")
 	if not hrp then return self.Barrel.Position end
@@ -209,9 +241,34 @@ function Blaster:CalculateInterceptPoint(target)
 	return tPos + tVel * timeToReach
 end
 
+-- this method uses euler integration to compute new position and velocity
+-- new position = old position + velocity * dt + half gravity * dt squared
+function Blaster:CalculateProjectilePhysics(proj, dt)
+	local newPos = proj.Position + proj.Velocity * dt + 0.5 * GRAVITY * (dt^2)
+	local newVel = proj.Velocity + GRAVITY * dt
+	return newPos, newVel
+end
+
+-- this method does raycasting with error handling using pcall
+function Blaster:PerformRaycast(startPos, endPos, ignorePart)
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = {ignorePart}
+	local success, result = pcall(function()
+		return Workspace:Raycast(startPos, endPos - startPos, rayParams)
+	end)
+	if not success then
+		warn("raycast error occurred in projectile update: ", result)
+		return nil
+	end
+	return result
+end
+
+--=========================================
+-- firing and projectile simulation
+--===============================================
 
 -- this method creates a projectile at the barrel and plays the fire sound
--- This method uses the CreateBullet method to get a bullet from the pool and then creates a projectile record
 function Blaster:FireProjectile()
 	local origin = self.Barrel.Position
 	local direction = self.Barrel.CFrame.LookVector
@@ -227,123 +284,115 @@ function Blaster:FireProjectile()
 		Velocity = direction * self.Config.ProjectileSpeed,
 		Damage = self.Config.Damage,
 		Lifetime = self.Config.ProjectileLifetime,
-		StartTime = tick(),
+		StartTime = os.clock(),
 		BounceCount = 0,
 		MaxBounces = self.Config.ProjectileBounce,
 	}
 	table.insert(self.Projectiles, proj)
 end
 
--- this method updates the positions of all active projectiles
--- it uses euler integration to estimate motion by calculating the following: newPos = oldPos + velocity * dt + 0.5 * gravity * (dt^2)
--- raycast is then used to check if the projectiles path collides with an object
--- we use pcall for raycasting, it is to catch errors so the script does not crash during unexpected issues
+-- this method checks if the hit object is damageable and applies damage and impact effects
+function Blaster:HandleProjectileHit(proj, rayResult)
+	local hit = rayResult.Instance
+	local character = hit.Parent
+	
+	if not character then return false end
+	
+	if character:FindFirstChildOfClass("Humanoid") then
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid:TakeDamage(proj.Damage)
+		else
+			warn("humanoid missing in character")
+		end
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			self:ApplyImpactEffects(character, proj.Velocity.Unit)
+		end
+		return true
+	end
+	return false
+end
+
+-- this method reflects the projectile velocity off the surface normal if bounces remain
+function Blaster:HandleProjectileBounce(proj, rayResult)
+	if proj.BounceCount < proj.MaxBounces then
+		proj.BounceCount = proj.BounceCount + 1
+		local normal = rayResult.Normal
+		local reflected = proj.Velocity - 2 * proj.Velocity:Dot(normal) * normal
+		local newVel = reflected * 0.8
+		if newVel.Magnitude > proj.Velocity.Magnitude then
+			newVel = newVel.Unit * proj.Velocity.Magnitude
+		end
+		proj.Velocity = newVel
+		proj.Position = rayResult.Position + normal * 0.5
+		return true
+	end
+	return false
+end
+
+-- this method applies impact effects using linear velocity to push the target and adds a highlight for visualization
+function Blaster:ApplyImpactEffects(character, direction)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	-- linear velocity offers better control and stability than body velocity
+	local attach = Instance.new("Attachment")
+	attach.Parent = hrp
+	local lv = Instance.new("LinearVelocity")
+	lv.Attachment0 = attach
+	lv.VectorVelocity = direction * 5
+	lv.MaxForce = 1e5
+	lv.Parent = hrp
+	Debris:AddItem(lv, 0.5)
+	Debris:AddItem(attach, 0.5)
+	-- add a purple highlight to indicate a hit
+	local highlight = Instance.new("Highlight")
+	highlight.FillColor = Color3.new(1, 0.219608, 0.933333)
+	highlight.OutlineColor = Color3.new(1, 0.219608, 0.933333)
+	highlight.Parent = character
+	Debris:AddItem(highlight, 1)
+end
+
+-- this method updates the positions of all active projectiles using our helper functions
 function Blaster:UpdateProjectiles(dt)
-	-- iterate through blaster projectiles
 	for i = #self.Projectiles, 1, -1 do
 		local proj = self.Projectiles[i]
-		-- if projectile is too old, destroy it
-		if tick() - proj.StartTime >= proj.Lifetime then
+		if os.clock() - proj.StartTime >= proj.Lifetime then
 			self:DestroyProjectile(proj)
 		else
-			-- if not , continue calculations
 			local oldPos = proj.Position
-			-- here we use euler integration to update position
-			local newPos = oldPos + proj.Velocity * dt + 0.5 * GRAVITY * (dt^2)
-			proj.Velocity = proj.Velocity + GRAVITY * dt
-			-- calculate ray direction
-			local rayDir = newPos - oldPos
-			-- set up ray params to exclude the projectile itself
-			local rayParams = RaycastParams.new()
-			rayParams.FilterType = Enum.RaycastFilterType.Exclude
-			local filters = {proj.Part}
-			rayParams.FilterDescendantsInstances = filters
-
-			-- attempt raycasting and use pcall to catch any errors during this process
-			local success, rayResult = pcall(function()
-				return Workspace:Raycast(oldPos, rayDir, rayParams)
-			end)
-			if not success then
-				warn("Raycast error occurred in projectile update: ", rayResult)
-				rayResult = nil
-			end
-
+			-- calculate new position and velocity using euler integration based on kinematics
+			local newPos, newVel = self:CalculateProjectilePhysics(proj, dt)
+			-- perform raycast to check for collision between oldPos and newPos
+			local rayResult = self:PerformRaycast(oldPos, newPos, proj.Part)
 			if rayResult then
-				-- a collision was detected, update projectile position to the point of impact
 				proj.Position = rayResult.Position
 				proj.Part.CFrame = CFrame.new(rayResult.Position)
-				local hit = rayResult.Instance
-				local character = hit.Parent
-				local hitDamageable = false
-				-- if the hit object contains a humanoid then it is a valid target for damage
-				if character and character:FindFirstChildOfClass("Humanoid") then
-					hitDamageable = true
-					local humanoid = character:FindFirstChildOfClass("Humanoid")
-					if humanoid then
-						-- use TakeDamage method of a humanoid instance to actually apply damage
-						humanoid:TakeDamage(proj.Damage)
-					else
-						-- if for some reason the character has no humanoid we just push a warning
-						warn("Humanoid missing in character")
-					end
-					local hrp = character:FindFirstChild("HumanoidRootPart")
-					if hrp then
-						-- use linear velocity to push the target in the same direction as the shot
-						-- linear velocity allows us to apply controlled force predictivley with more customization capability 
-						-- unlive body velocity which is depreciated
-						local pushDir = (proj.Velocity).Unit -- calculate push direction
-						local attach = Instance.new("Attachment") -- init an attatchment to be used for the lv
-						attach.Parent = hrp -- create and parent it to the hrp
-						local lv = Instance.new("LinearVelocity") -- init a linear velocity instance
-						lv.Attachment0 = attach -- set its necessary configurations
-						lv.VectorVelocity = pushDir * 5
-						lv.MaxForce = 1e5
-						lv.Parent = hrp
-						Debris:AddItem(lv, 0.5) -- add the linear velocity to debris so it despawns on its own
-						Debris:AddItem(attach, 0.5) -- do the same for the attachment 
-						-- add a purple high light to the target to visualize a hit
-						local highlight = Instance.new("Highlight")
-						-- set its properties
-						highlight.FillColor = Color3.new(1, 0.219608, 0.933333)
-						highlight.OutlineColor = Color3.new(1, 0.219608, 0.933333)
-						-- parent it to the character and add it to debris
-						highlight.Parent = character
-						Debris:AddItem(highlight, 1)
-					end
-				end
-				-- if damage was applied, remove the projectile
-				if hitDamageable then
+				-- if the hit is on a damageable target, handle impact
+				if self:HandleProjectileHit(proj, rayResult) then
 					self:DestroyProjectile(proj)
-					-- if the projectile can bounce, reflect its velocity off the surface using the surface normal
-				elseif proj.BounceCount < proj.MaxBounces then
-					proj.BounceCount = proj.BounceCount + 1
-					local normal = rayResult.Normal
-					local reflected = proj.Velocity - 2 * proj.Velocity:Dot(normal) * normal
-					local newVel = reflected * 0.8
-					-- this check prevents the projectile from gaining extra speed due to rounding errors
-					if newVel.Magnitude > proj.Velocity.Magnitude then
-						newVel = newVel.Unit * proj.Velocity.Magnitude
-					end
-					proj.Velocity = newVel
-					proj.Position = rayResult.Position + normal * 0.5
+					-- if not and the projectile can bounce, handle bounce and update velocity and position accordingly
+				elseif self:HandleProjectileBounce(proj, rayResult) then
+					-- bounce handled
 				else
 					self:DestroyProjectile(proj)
 				end
 			else
-				-- if no collision was detected update projectile normally
+				-- no collision detected, so update normally
 				proj.Position = newPos
+				proj.Velocity = newVel
 				proj.Part.CFrame = CFrame.new(newPos)
 			end
 		end
 	end
 end
 
--- this removes a projectile and returns its bullet to the pool for reuse
+-- this method removes a projectile and returns its bullet to the pool for reuse
 function Blaster:DestroyProjectile(proj)
 	if proj.Part then
 		proj.Part:Destroy()
 	end
-	-- iterate over the projectiles table using a loop to remove the projectile record
+	-- iterate over projectiles to remove the record
 	for i = #self.Projectiles, 1, -1 do
 		if self.Projectiles[i] == proj then
 			table.remove(self.Projectiles, i)
@@ -352,14 +401,18 @@ function Blaster:DestroyProjectile(proj)
 	end
 end
 
--- this method merges new configuration settings into the current blaster config
+---===============================================
+-- additional methods for upgrades and shutdown
+--=================================================
+
+-- this method merges new settings into the current blaster config
 function Blaster:Upgrade(newConfig)
 	for key, value in pairs(newConfig) do
 		self.Config[key] = value
 	end
 end
 
--- this method stops the blaster loop, cleans up all projectiles and removes the blaster model from workspace
+-- this method stops the blaster loop, cleans up projectiles, and removes the blaster model from the workspace
 function Blaster:Shutdown()
 	self:Stop()
 	for i = #self.Projectiles, 1, -1 do
@@ -371,7 +424,11 @@ function Blaster:Shutdown()
 	self.Active = false
 end
 
--- this method returns a table of positions that represent the predicted path of a projectile
+---========================================================
+-- debug methods
+--==========================================================
+
+-- this method returns a table of positions representing the predicted path of a projectile
 function Blaster:GetProjectileTrajectory(proj, steps, dt)
 	steps = steps or 20
 	dt = dt or 0.1
@@ -379,7 +436,7 @@ function Blaster:GetProjectileTrajectory(proj, steps, dt)
 	local pos = proj.Position
 	local vel = proj.Velocity
 	for i = 1, steps do
-		-- the formula here is derived from physics: position = initial position + velocity * time + 0.5 * acceleration * time^2
+		-- calculation based on kinematics, newPos = pos + vel * dt + 0.5 * gravity * (dt^2)
 		pos = pos + vel * dt + 0.5 * GRAVITY * (dt^2)
 		vel = vel + GRAVITY * dt
 		table.insert(traj, pos)
@@ -387,8 +444,7 @@ function Blaster:GetProjectileTrajectory(proj, steps, dt)
 	return traj
 end
 
--- this method creates visual markers along the predicted trajectory for debugging 
--- this method uses a loop to create and display small parts along the calculated path
+-- this method creates visual markers along the predicted trajectory for debugging
 function Blaster:DrawTrajectory(proj, steps, dt)
 	local traj = self:GetProjectileTrajectory(proj, steps, dt)
 	for i, pos in ipairs(traj) do
@@ -403,5 +459,6 @@ function Blaster:DrawTrajectory(proj, steps, dt)
 		Debris:AddItem(marker, 3)
 	end
 end
--- finally return the Blaster table
+
+-- finally, return the blaster table
 return Blaster
