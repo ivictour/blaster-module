@@ -30,6 +30,7 @@ local Workspace = game:GetService("Workspace")
 
 -- define a gravity vector based on the workspace gravity, this is used in the physics calculations so that the projectile motion is realistic
 local GRAVITY = Vector3.new(0, -Workspace.Gravity, 0)
+local SCAN_INTERVAL = 0.2 -- scan interval, helps optimization
 
 -- bulletPool is a table used to store and reuse bullet parts instead of creating new ones each time, reducing lag
 local bulletPool = {}
@@ -109,6 +110,7 @@ function Blaster.new(blasterModel, config)
 	self.Target = nil -- the current target the blaster is aiming at
 	self.State = "idle" -- possible states are idle, tracking, or firing
 	self.Active = true -- flag indicating if the blaster is active
+	self.LastScanTime = 0
 	return self
 end
 
@@ -152,7 +154,11 @@ function Blaster:Update(dt)
 		self:Shutdown()
 		return
 	end
-	self:ScanForTarget()
+	-- scanning debounce 
+	if time() - self.LastScanTime >= SCAN_INTERVAL then
+		self:ScanForTarget()
+		self.LastScanTime = time()
+	end
 	if self.Target then
 		self:SetState("tracking")
 		-- if the target has a humanoid root part, use predictive targeting to account for possible target movement
@@ -229,32 +235,52 @@ end
 --=====================================================
 
 -- this method calculates where the projectile should be aimed based on the target's velocity
--- it uses basic kinematics, timeToReach is estimated by dividing the distance by projectile speed,
--- then the target's velocity is multiplied by this time to predict the intercept position
 function Blaster:CalculateInterceptPoint(target)
+	-- first, check if the target has a hrp
 	local hrp = target:FindFirstChild("HumanoidRootPart")
-	if not hrp then
-		return self.Barrel.Position
-	end
-	local tPos = hrp.Position -- targets current position
-	local tVel = hrp.Velocity -- targets current velocity
-	local barrelPos = self.Barrel.Position -- blasters barrel position
-	local projectileSpeed = self.Config.ProjectileSpeed -- projectile speed
-	-- calculate the relative position and velocity
+	if not hrp then return self.Barrel.Position end -- if no hrp, just aim at the barrel's current position
+
+	-- read the targets current position and velocity
+	local tPos = hrp.Position
+	local tVel = hrp.Velocity
+	-- read the blaster's barrel position and the projectile speed from the config
+	local barrelPos = self.Barrel.Position
+	local projectileSpeed = self.Config.ProjectileSpeed
+	-- read the workspace gravity to account for the projectile's arc
+	local gravity = Workspace.Gravity
+	-- calculate the relative position and velocity between the target and the blaster
 	local relativePos = tPos - barrelPos
 	local relativeVel = tVel
-
-	-- solve for the time using the quadratic formula,
-	-- using; 0.5 * gravity * t^2 + (relativeVel.Y - projectileSpeed * dir.Y) * t + relativePos.Y = 0
-	local horizontalDistance = Vector3.new(relativePos.X, 0, relativePos.Z).Magnitude
-	-- time to reach the target 
-	local timeToReach = horizontalDistance / projectileSpeed
-	-- predict the targets position after timeToReach, accounting for gravity
-	local predictedPos = tPos + tVel * timeToReach
-	local gravityOffset = Vector3.new(0, -0.5 * GRAVITY * (timeToReach ^ 2), 0)
-	-- adjust the predicted position to account for gravity
+	-- to predict where the projectile and target will meet, we solve a quadratic equation
+	-- the equation represents the vertical motion of the projectile and target over time
+	-- the general form is, a*t^2 + b*t + c = 0
+	-- where,
+	-- a = 0.5 * gravity (accounts for gravity's effect on the projectile)
+	-- b = relativeVel.Y - projectileSpeed * (relativePos.Y / relativePos.Magnitude) (accounts for the target's vertical velocity and the projectile's initial vertical speed)
+	-- c = relativePos.Y (the initial vertical distance between the target and the blaster)
+	local a = 0.5 * gravity
+	local b = relativeVel.Y - projectileSpeed * (relativePos.Y / relativePos.Magnitude)
+	local c = relativePos.Y
+	-- calculate the discriminant to check if a solution exists
+	-- if the discriminant is negative, there's no real solution, meaning the target is out of reach
+	local discriminant = b^2 - 4 * a * c
+	if discriminant < 0 then
+		return tPos -- if no solution, just aim directly at the target's current position
+	end
+	-- calculate the time of flight using the quadratic formula
+	-- we use the smaller root first since it represents the earliest intercept point
+	local t = (-b - math.sqrt(discriminant)) / (2 * a)
+	if t < 0 then
+		-- if the time is negative, use the larger root instead
+		t = (-b + math.sqrt(discriminant)) / (2 * a)
+	end
+	-- predict the target's future position by adding its velocity multiplied by the time of flight
+	local predictedPos = tPos + tVel * t
+	-- account for gravity's effect on the projectile by adding a vertical offset
+	-- this ensures the blaster aims slightly above the target to compensate for the arc
+	local gravityOffset = Vector3.new(0, -0.5 * gravity * (t^2), 0)
 	predictedPos = predictedPos + gravityOffset
-	-- return the final intercept point
+	-- return the final predicted intercept point
 	return predictedPos
 end
 -- this method uses euler integration to compute new position and velocity
