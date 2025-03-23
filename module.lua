@@ -233,14 +233,30 @@ end
 -- then the target's velocity is multiplied by this time to predict the intercept position
 function Blaster:CalculateInterceptPoint(target)
 	local hrp = target:FindFirstChild("HumanoidRootPart")
-	if not hrp then return self.Barrel.Position end
-	local tPos = hrp.Position
-	local tVel = hrp.Velocity
-	local d = (tPos - self.Barrel.Position).Magnitude
-	local timeToReach = d / self.Config.ProjectileSpeed
-	return tPos + tVel * timeToReach
-end
+	if not hrp then
+		return self.Barrel.Position
+	end
+	local tPos = hrp.Position -- targets current position
+	local tVel = hrp.Velocity -- targets current velocity
+	local barrelPos = self.Barrel.Position -- blasters barrel position
+	local projectileSpeed = self.Config.ProjectileSpeed -- projectile speed
+	-- calculate the relative position and velocity
+	local relativePos = tPos - barrelPos
+	local relativeVel = tVel
 
+	-- solve for the time using the quadratic formula,
+	-- using; 0.5 * gravity * t^2 + (relativeVel.Y - projectileSpeed * dir.Y) * t + relativePos.Y = 0
+	local horizontalDistance = Vector3.new(relativePos.X, 0, relativePos.Z).Magnitude
+	-- time to reach the target 
+	local timeToReach = horizontalDistance / projectileSpeed
+	-- predict the targets position after timeToReach, accounting for gravity
+	local predictedPos = tPos + tVel * timeToReach
+	local gravityOffset = Vector3.new(0, -0.5 * GRAVITY * (timeToReach ^ 2), 0)
+	-- adjust the predicted position to account for gravity
+	predictedPos = predictedPos + gravityOffset
+	-- return the final intercept point
+	return predictedPos
+end
 -- this method uses euler integration to compute new position and velocity
 -- new position = old position + velocity * dt + half gravity * dt squared
 function Blaster:CalculateProjectilePhysics(proj, dt)
@@ -321,9 +337,6 @@ function Blaster:HandleProjectileBounce(proj, rayResult)
 		local normal = rayResult.Normal
 		local reflected = proj.Velocity - 2 * proj.Velocity:Dot(normal) * normal
 		local newVel = reflected * 0.8
-		if newVel.Magnitude > proj.Velocity.Magnitude then
-			newVel = newVel.Unit * proj.Velocity.Magnitude
-		end
 		proj.Velocity = newVel
 		proj.Position = rayResult.Position + normal * 0.5
 		return true
@@ -390,7 +403,7 @@ end
 -- this method removes a projectile and returns its bullet to the pool for reuse
 function Blaster:DestroyProjectile(proj)
 	if proj.Part then
-		proj.Part:Destroy()
+		Blaster:ReturnBullet(proj.Part)
 	end
 	-- iterate over projectiles to remove the record
 	for i = #self.Projectiles, 1, -1 do
